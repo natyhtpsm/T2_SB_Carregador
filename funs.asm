@@ -9,7 +9,6 @@ section .text
 global f1
 global f2
 
-; Em Linux 32 bits, não use underscore antes do printf:
 extern printf
 
 ; ----------------------------------------------------------
