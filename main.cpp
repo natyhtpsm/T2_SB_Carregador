@@ -7,15 +7,14 @@ extern "C" void f1(int programSize, int count, ...);
 
 int main(int argc, char* argv[]) {
     if (argc < 4 || ((argc - 2) % 2 != 0)) {
-        std::cerr << "Uso: " << argv[0]
-                  << " <tamanho-programa> <addr1> <size1> [<addr2> <size2> ...]"
-                  << std::endl;
+        cerr << "Uso: " << argv[0]
+             << " <tamanho-programa> <addr1> <size1> [<addr2> <size2> ...]" << endl;
         return 1;
     }
     
     int programSize = std::atoi(argv[1]);
     if (programSize <= 0) {
-        std::cerr << "Erro: o tamanho do programa deve ser um inteiro positivo." << std::endl;
+        cerr << "Erro: o tamanho do programa deve ser um inteiro positivo." << endl;
         return 1;
     }
     
@@ -52,7 +51,7 @@ int main(int argc, char* argv[]) {
                std::atoi(argv[10]), std::atoi(argv[11]));
             break;
         default:
-            std::cerr << "Numero de blocos nao suportado (maximo 5) neste exemplo." << std::endl;
+            cerr << "Numero de blocos nao suportado (maximo 5) neste exemplo." << endl;
             return 1;
     }
     

@@ -1,242 +1,167 @@
 section .data
-fmt_prog:       db "Programa de %d bytes.", 10, 0
-alloc_header:   db "Alocacao realizada:", 10, 0
-fmt_alloc:      db "Segmento %d - Endereco: %d, Bytes alocados: %d", 10, 0
-fmt_error:      db "ERRO: O programa nao coube totalmente na memoria livre. Faltam %d bytes para completar a carga.", 10, 0
-fmt_success:    db "Programa carregado com sucesso em sua totalidade.", 10, 0
+msg_single     db "Programa carregado no bloco:", 10, 0
+msg_multi      db "Programa carregado em multiplos blocos:", 10, 0
+msg_block      db "Bloco %d: Endereco inicial: %d, Endereco final: %d", 10, 0
+msg_range      db "Endereco inicial: %d, Endereco final: %d", 10, 0
+msg_error      db "Erro: Nao ha espaco suficiente para carregar o programa.", 10, 0
+msg_remaining  db "Erro: Nao ha espaco suficiente para carregar o restante do programa (%d unidades restantes).", 10, 0
+
+section .bss
+array    resd 40    ; Espaço para até 5 pares (endereco, tamanho)
 
 section .text
 global f1
 global f2
-
 extern printf
 
-; ----------------------------------------------------------
-; f1: simula o carregamento do programa nos blocos disponíveis.
-; Parâmetros (cdecl):
-;   [ebp+8]  : programSize (tamanho do programa, em bytes)
-;   [ebp+12] : count (número de blocos)
-;   [ebp+16] : addr do 1º bloco
-;   [ebp+20] : size do 1º bloco
-;   [ebp+24] : addr do 2º bloco (se existir)
-;   [ebp+28] : size do 2º bloco (se existir)
-;   ... e assim por diante ...
-;
-; Descrição do que f1 faz:
-;   - Lê programSize e count.
-;   - Cria um array na pilha para armazenar (addr, allocated) de cada bloco.
-;   - Para cada bloco, se ainda houver "remaining" (bytes do programa a alocar),
-;     calcula quanto daquele bloco será usado (allocated) e desconta de remaining.
-;   - Ao final, chama f2(programSize, segmentsCount, arrayPtr, remaining).
-; ----------------------------------------------------------
+; f1: Processa os blocos disponíveis e armazena no array cada segmento a ser usado.
+; Parâmetros:
+;   [ebp+8]  -> tamanho do programa
+;   [ebp+12] -> número de blocos (count)
+;   [ebp+16] -> bloco 1: endereço
+;   [ebp+20] -> bloco 1: tamanho
+;   [ebp+24] -> bloco 2: endereço
+;   [ebp+28] -> bloco 2: tamanho
+;   ... etc.
 f1:
     push ebp
-    mov  ebp, esp
+    mov ebp, esp
     push ebx
     push esi
     push edi
 
-    ; Reserva 8 bytes locais: [ebp-8] = count, [ebp-4] = segmentsCount
-    sub  esp, 8
+    mov ecx, [ebp+8]     ; ecx = tamanho do programa restante
+    xor esi, esi         ; esi = número de segmentos usados (inicialmente 0)
+    xor edi, edi         ; edi = índice dos blocos (para acessar os argumentos)
 
-    ; [ebp+12] é o count
-    mov  eax, [ebp+12]
-    mov  [ebp-8], eax         ; count = parâmetro
+.process_blocks:
+    cmp edi, dword [ebp+12]  ; Se já processou todos os blocos, termina
+    jge .done
+    test ecx, ecx        ; Se não há mais espaço a alocar, termina
+    jle .done
 
-    ; segmentsCount = 0
-    mov  dword [ebp-4], 0
+    ; Calcula o offset para o bloco atual (cada bloco ocupa 8 bytes)
+    mov eax, edi
+    shl eax, 3           ; eax = edi * 8
+    mov ebx, [ebp+16+eax] ; ebx = endereço do bloco atual
+    mov edx, [ebp+20+eax] ; edx = tamanho disponível no bloco
 
-    ; EAX vai receber o programSize para calculos de "remaining"
-    mov  eax, [ebp+8]         ; remaining = programSize
-
-    ; Calcular tamanho do array = count * 8
-    mov  ecx, [ebp-8]         ; ecx = count
-    mov  ebx, 8
-    mov  edx, ecx             ; (só para legibilidade)
-    mov  eax, ecx             ; eax = count
-    mul  ebx                  ; eax = count * 8
-
-    ; Reserva espaço na pilha para o array
-    sub  esp, eax
-    mov  edi, esp             ; edi aponta para o array
-
-    ; Restaura o valor de remaining a partir de programSize
-    mov  eax, [ebp+8]
-
-    ; ESI será o índice de blocos
-    xor  esi, esi
-
-.loop_f1:
-    ; if (esi >= count) => sai
-    mov  ecx, [ebp-8]
-    cmp  esi, ecx
-    jge  .after_loop
-
-    ; if (remaining == 0) => sai
-    cmp  eax, 0
-    je   .after_loop
-
-    ; Salvar remaining na pilha para uso após o cálculo de allocated
-    push eax
-
-    ; Lê addr e size do bloco corrente
-    mov  edx, [ebp+16 + esi*8]   ; bloco.addr
-    mov  ebx, [ebp+20 + esi*8]   ; bloco.size
-
-    ; allocated = (remaining <= blockSize) ? remaining : blockSize
-    cmp  eax, ebx
-    jle  .use_remaining
-    jmp  .store_alloc
-
+    ; Aloca o menor valor entre o tamanho do bloco (edx) e o restante do programa (ecx)
+    cmp ecx, edx
+    jl .use_remaining    ; se ecx < edx, usa apenas o que falta
+    mov eax, edx         ; caso contrário, usa o bloco inteiro
+    jmp .store_allocation
 .use_remaining:
-    mov  ebx, eax   ; allocated = remaining
+    mov eax, ecx         ; usa só o restante
 
-.store_alloc:
-    ; Calcula onde gravar o registro (addr, allocated) no array
-    mov  edx, [ebp-4]   ; edx = segmentsCount
-    mov  eax, edx
-    mov  ecx, 8
-    mul  ecx            ; eax = segmentsCount * 8
-    add  eax, edi       ; eax = endereço do registro no array
+.store_allocation:
+    mov [array+esi*8], ebx   ; armazena o endereço do bloco
+    mov [array+esi*8+4], eax ; armazena a quantidade a usar neste bloco
+    sub ecx, eax             ; diminui o restante do programa
+    inc esi                ; incrementa os segmentos usados
+    inc edi                ; passa para o próximo bloco
+    jmp .process_blocks
 
-    ; Salva bloco.addr
-    mov  edx, [ebp+16 + esi*8]
-    mov  [eax], edx
-
-    ; Salva allocated
-    mov  [eax+4], ebx
-
-    ; Recupera o remaining antigo, e subtrai allocated
-    pop  ecx           ; ecx = remaining antes
-    sub  ecx, ebx      ; remaining -= allocated
-    mov  eax, ecx
-
-    ; segmentsCount++
-    mov  ecx, [ebp-4]
-    add  ecx, 1
-    mov  [ebp-4], ecx
-
-    ; próximo bloco
-    add  esi, 1
-    jmp  .loop_f1
-
-.after_loop:
-    ; f2(programSize, segmentsCount, arrayPtr, remaining)
-    push eax              ; remaining
-    mov  eax, [ebp-4]     ; segmentsCount
-    push eax
-    push edi              ; ponteiro para o array
-    mov  eax, [ebp+8]     ; programSize
-    push eax
-
+.done:
+    ; Chama f2 com os parâmetros na ordem correta (cdecl):
+    ; f2(segmentsUsed, array pointer, remaining)
+    push ecx              ; 3º parâmetro: restante (se > 0, houve falta de espaço)
+    push dword array      ; 2º parâmetro: ponteiro para o array de alocações
+    push esi              ; 1º parâmetro: número de segmentos usados
     call f2
-    add  esp, 16          ; limpa 4 parâmetros
+    add esp, 12
 
-    ; Desalocar o array
-    mov  eax, [ebp-8]     ; eax = count
-    mov  ecx, 8
-    mul  ecx              ; eax = count * 8
-    add  esp, eax
-
-    ; liberar os 8 bytes (count e segmentsCount)
-    add  esp, 8
-
-    pop  edi
-    pop  esi
-    pop  ebx
-    mov  esp, ebp
-    pop  ebp
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
 
-; ----------------------------------------------------------
-; f2: imprime as informações da alocação
+; f2: Exibe as mensagens conforme os segmentos alocados e o restante.
 ; Parâmetros (cdecl):
-;   [ebp+8]  : programSize
-;   [ebp+12] : segmentsCount
-;   [ebp+16] : ponteiro para o array de (addr, allocated)
-;   [ebp+20] : remaining (se > 0 => não coube)
-; ----------------------------------------------------------
+;   [ebp+8]  -> número de segmentos usados
+;   [ebp+12] -> ponteiro para o array de alocações
+;   [ebp+16] -> restante (unidades que não foram alocadas)
 f2:
     push ebp
-    mov  ebp, esp
+    mov ebp, esp
     push ebx
     push esi
     push edi
 
-    ; printf("Programa de %d bytes.", programSize)
-    mov  eax, [ebp+8]
+    ; Lê o número de segmentos usados (primeiro parâmetro)
+    mov eax, [ebp+8]
+    test eax, eax
+    jz .print_error
+
+    cmp eax, 1
+    jne .print_multi
+
+    ; Caso de bloco único:
+    push msg_single
+    call printf
+    add esp, 4
+
+    ; Lê o ponteiro para o array (segundo parâmetro)
+    mov edx, [ebp+12]
+    mov eax, [edx]       ; endereço inicial do bloco
+    mov ebx, [edx+4]     ; tamanho alocado
+    dec ebx             ; (tamanho - 1)
+    add ebx, eax        ; calcula endereço final
+
+    push ebx            ; endereço final
+    push eax            ; endereço inicial
+    push msg_range
+    call printf
+    add esp, 12
+    jmp .check_remaining
+
+.print_multi:
+    push msg_multi
+    call printf
+    add esp, 4
+
+    xor esi, esi
+.print_blocks:
+    cmp esi, [ebp+8]    ; itera sobre os segmentos usados
+    jge .check_remaining
+
+    mov edx, [ebp+12]         ; ponteiro para o array
+    mov eax, [edx+esi*8]      ; endereço inicial do segmento
+    mov ebx, [edx+esi*8+4]    ; tamanho alocado no segmento
+    dec ebx                 ; (tamanho - 1)
+    add ebx, eax            ; calcula endereço final
+
+    push ebx                ; endereço final
+    push eax                ; endereço inicial
+    lea eax, [esi+1]        ; número do bloco (base 1)
     push eax
-    push dword fmt_prog
+    push msg_block
     call printf
-    add  esp, 8
+    add esp, 16
 
-    ; Se segmentsCount > 0, imprime o cabeçalho
-    mov  eax, [ebp+12]
-    cmp  eax, 0
-    jle  .no_alloc_header
+    inc esi
+    jmp .print_blocks
 
-    push dword alloc_header
-    call printf
-    add  esp, 4
+.check_remaining:
+    mov eax, [ebp+16]    ; lê o restante (terceiro parâmetro)
+    test eax, eax
+    jz .done
 
-.no_alloc_header:
-    xor  esi, esi       ; índice de loop
-
-.loop_f2:
-    mov  eax, [ebp+12]
-    cmp  esi, eax
-    jge  .after_loop_f2  ; se esi >= segmentsCount, sai
-
-    ; Preparar argumentos:
-    ;   printf("Segmento %d - Endereco: %d, Bytes alocados: %d",
-    ;           (esi+1), blockAddr, allocated)
-    mov  eax, esi
-    add  eax, 1
     push eax
-
-    ; endereço do registro = arrayPtr + (esi*8)
-    mov  ebx, [ebp+16]
-    mov  eax, esi
-    mov  edx, 8
-    mul  edx
-    add  eax, ebx
-
-    ; block address
-    mov  edx, [eax]
-    push edx
-    ; allocated
-    mov  edx, [eax+4]
-    push edx
-
-    push dword fmt_alloc
+    push msg_remaining
     call printf
-    add  esp, 16
-
-    add  esi, 1
-    jmp  .loop_f2
-
-.after_loop_f2:
-    ; Verifica se sobrou remaining > 0
-    mov  eax, [ebp+20]
-    cmp  eax, 0
-    jg   .print_error
-
-    ; Se remaining == 0 => sucesso
-    push dword fmt_success
-    call printf
-    add  esp, 4
-    jmp  .end_f2
+    add esp, 8
+    jmp .done
 
 .print_error:
-    push eax                ; quantidade que faltou
-    push dword fmt_error
+    push msg_error
     call printf
-    add  esp, 8
+    add esp, 4
 
-.end_f2:
-    pop  edi
-    pop  esi
-    pop  ebx
-    mov  esp, ebp
-    pop  ebp
+.done:
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
     ret
